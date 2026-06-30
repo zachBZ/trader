@@ -15,95 +15,55 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch Eastmoney sector fund-flow history
-        continue-on-error: true
+      - name: Fetch remaining Eastmoney sector histories
         run: |
           python - <<'PY'
-          import json, time, urllib.parse
+          import json, time
           from pathlib import Path
           import requests
 
-          wanted = ['半导体','通信设备','自动化设备','化学制药','证券','工业金属','消费电子','光伏设备']
-          aliases = {'证券': ['证券Ⅱ','证券','券商概念']}
-          headers = {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36',
-              'Referer': 'https://data.eastmoney.com/bkzj/hy.html',
-              'Accept': 'application/json,text/plain,*/*',
-              'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-              'Connection': 'close',
-          }
-          s = requests.Session()
-          out = {'fetched_at_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'diagnostics': [], 'sectors': {}}
-
-          # Resolve current Eastmoney industry-board codes dynamically.
-          list_url = 'https://82.push2.eastmoney.com/api/qt/clist/get'
-          list_params = {
-              'pn':1,'pz':500,'po':1,'np':1,'fltt':2,'invt':2,'fid':'f62',
-              'fs':'m:90+t:2','fields':'f12,f14',
-              'ut':'b2884a393a59ad64002292a3e90d46a5'
-          }
-          try:
-              r = s.get(list_url, params=list_params, headers=headers, timeout=30)
-              out['diagnostics'].append({'stage':'board_list','url':r.url,'status':r.status_code,'head':r.text[:500]})
-              r.raise_for_status()
-              diff = ((r.json().get('data') or {}).get('diff') or [])
-              code_by_name = {x.get('f14'): x.get('f12') for x in diff if x.get('f14') and x.get('f12')}
-          except Exception as e:
-              code_by_name = {}
-              out['diagnostics'].append({'stage':'board_list_error','error':repr(e)})
-
-          fallback = {
-              '半导体':'BK1036','通信设备':'BK0448','自动化设备':'BK1237','化学制药':'BK0465',
-              '证券':'BK0473','工业金属':'BK1287','消费电子':'BK1037','光伏设备':'BK1031'
-          }
-          resolved = {}
-          for name in wanted:
-              candidates = [name] + aliases.get(name, [])
-              code = next((code_by_name.get(x) for x in candidates if code_by_name.get(x)), None) or fallback[name]
-              resolved[name] = code
-          out['resolved_codes'] = resolved
-
+          sectors = {'工业金属':'BK1287','消费电子':'BK1037','光伏设备':'BK1031'}
           base = 'https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get'
-          for name, code in resolved.items():
-              params = {
-                  'lmt':'0','klt':'101','fields1':'f1,f2,f3,f7',
-                  'fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',
-                  'ut':'b2884a393a59ad64002292a3e90d46a5','secid':'90.'+code,
-                  '_':str(int(time.time()*1000)),
-              }
-              try:
-                  r = s.get(base, params=params, headers={**headers, 'Referer':f'https://data.eastmoney.com/bkzj/{code}.html'}, timeout=30)
-                  out['diagnostics'].append({'stage':'history','name':name,'code':code,'url':r.url,'status':r.status_code,'head':r.text[:300]})
-                  r.raise_for_status()
-                  payload = r.json()
-                  data = payload.get('data') or {}
-                  klines = data.get('klines') or []
-                  rows = []
-                  for line in klines:
-                      p = line.split(',')
-                      if len(p) < 13:
-                          continue
-                      rows.append({
-                          'date': p[0], 'main_net_yuan': float(p[1]),
-                          'small_net_yuan': float(p[2]), 'medium_net_yuan': float(p[3]),
-                          'large_net_yuan': float(p[4]), 'super_large_net_yuan': float(p[5]),
-                          'main_ratio_pct': float(p[6]), 'small_ratio_pct': float(p[7]),
-                          'medium_ratio_pct': float(p[8]), 'large_ratio_pct': float(p[9]),
-                          'super_large_ratio_pct': float(p[10]), 'close': float(p[11]),
-                          'change_pct': float(p[12]),
-                      })
-                  out['sectors'][name] = {'code':code,'rows':rows}
-              except Exception as e:
-                  out['sectors'][name] = {'code':code,'rows':[],'error':repr(e)}
-              time.sleep(0.5)
-
+          headers = {
+              'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36',
+              'Accept':'application/json,text/plain,*/*','Accept-Language':'zh-CN,zh;q=0.9',
+              'Connection':'close'
+          }
+          out={'fetched_at_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'sectors':{},'diagnostics':[]}
+          for name,code in sectors.items():
+              params={'lmt':'0','klt':'101','fields1':'f1,f2,f3,f7',
+                      'fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',
+                      'ut':'b2884a393a59ad64002292a3e90d46a5','secid':'90.'+code,'_':str(int(time.time()*1000))}
+              last=None
+              for attempt in range(5):
+                  try:
+                      with requests.Session() as s:
+                          r=s.get(base,params=params,headers={**headers,'Referer':f'https://data.eastmoney.com/bkzj/{code}.html'},timeout=45)
+                      out['diagnostics'].append({'name':name,'attempt':attempt+1,'status':r.status_code,'head':r.text[:200]})
+                      r.raise_for_status(); payload=r.json(); klines=((payload.get('data') or {}).get('klines') or [])
+                      if not klines: raise RuntimeError('empty klines')
+                      rows=[]
+                      for line in klines:
+                          p=line.split(',')
+                          if len(p)>=13:
+                              rows.append({'date':p[0],'main_net_yuan':float(p[1]),'small_net_yuan':float(p[2]),
+                                           'medium_net_yuan':float(p[3]),'large_net_yuan':float(p[4]),
+                                           'super_large_net_yuan':float(p[5]),'main_ratio_pct':float(p[6]),
+                                           'small_ratio_pct':float(p[7]),'medium_ratio_pct':float(p[8]),
+                                           'large_ratio_pct':float(p[9]),'super_large_ratio_pct':float(p[10]),
+                                           'close':float(p[11]),'change_pct':float(p[12])})
+                      out['sectors'][name]={'code':code,'rows':rows}; last=None; break
+                  except Exception as e:
+                      last=repr(e); time.sleep(8*(attempt+1))
+              if last: out['sectors'][name]={'code':code,'rows':[],'error':last}
+              time.sleep(8)
           Path('tmp').mkdir(exist_ok=True)
-          Path('tmp/sector_flow_20260630.json').write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding='utf-8')
-          print(json.dumps({'resolved_codes':resolved,'counts':{k:len(v.get('rows',[])) for k,v in out['sectors'].items()},'diagnostics':out['diagnostics']}, ensure_ascii=False, indent=2))
+          Path('tmp/sector_flow_remaining.json').write_text(json.dumps(out,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps({'counts':{k:len(v.get('rows',[])) for k,v in out['sectors'].items()},'diagnostics':out['diagnostics']},ensure_ascii=False,indent=2))
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: sector-flow-data
-          path: tmp/sector_flow_20260630.json
+          name: sector-flow-remaining
+          path: tmp/sector_flow_remaining.json
           retention-days: 1

@@ -4,7 +4,8 @@ on:
   push:
     branches: [master]
     paths:
-      - '.github/workflows/chatgpt-fetch-sector-flow.yml'
+      - 'tmp/chatgpt-sector-flow-trigger.txt'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -65,7 +66,7 @@ jobs:
               rows = []
               for line in klines:
                   p = line.split(',')
-                  if len(p) < 15:
+                  if len(p) < 13:
                       continue
                   rows.append({
                       'date': p[0],

@@ -28,40 +28,48 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch one Eastmoney sector history
+      - name: Fetch one Eastmoney sector history with page session
         run: |
           python - <<'PY'
-          import json, os, time
+          import json, time, re
           from pathlib import Path
           import requests
 
           name='${{ matrix.name }}'; code='${{ matrix.code }}'; key='${{ matrix.key }}'
-          url='https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get'
-          params={'lmt':'0','klt':'101','fields1':'f1,f2,f3,f7',
-                  'fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',
-                  'ut':'b2884a393a59ad64002292a3e90d46a5','secid':'90.'+code,'_':str(int(time.time()*1000))}
-          headers={'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36',
-                   'Referer':f'https://data.eastmoney.com/bkzj/{code}.html','Accept':'application/json,text/plain,*/*',
-                   'Accept-Language':'zh-CN,zh;q=0.9','Connection':'close'}
+          page_url=f'https://data.eastmoney.com/bkzj/{code}.html'
+          api_url='https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get'
+          base_headers={'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
+                        'Accept-Language':'zh-CN,zh;q=0.9,en;q=0.8','Connection':'close'}
           out={'fetched_at_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'name':name,'code':code,'rows':[],'diagnostics':[]}
           last=None
-          for attempt in range(3):
+          for attempt in range(4):
               try:
-                  r=requests.get(url,params=params,headers=headers,timeout=35)
-                  out['diagnostics'].append({'attempt':attempt+1,'status':r.status_code,'head':r.text[:300]})
-                  r.raise_for_status(); klines=((r.json().get('data') or {}).get('klines') or [])
-                  if not klines: raise RuntimeError('empty klines')
-                  for line in klines:
-                      p=line.split(',')
-                      if len(p)>=13:
-                          out['rows'].append({'date':p[0],'main_net_yuan':float(p[1]),'small_net_yuan':float(p[2]),
-                            'medium_net_yuan':float(p[3]),'large_net_yuan':float(p[4]),'super_large_net_yuan':float(p[5]),
-                            'main_ratio_pct':float(p[6]),'small_ratio_pct':float(p[7]),'medium_ratio_pct':float(p[8]),
-                            'large_ratio_pct':float(p[9]),'super_large_ratio_pct':float(p[10]),'close':float(p[11]),
-                            'change_pct':float(p[12])})
-                  last=None; break
+                  with requests.Session() as s:
+                      p=s.get(page_url,headers={**base_headers,'Accept':'text/html,application/xhtml+xml'},timeout=35)
+                      out['diagnostics'].append({'attempt':attempt+1,'stage':'page','status':p.status_code,'cookies':dict(s.cookies),'head':p.text[:120]})
+                      p.raise_for_status()
+                      tokens=re.findall(r'[?&]ut=([a-f0-9]{32})',p.text)
+                      ut=tokens[0] if tokens else 'b2884a393a59ad64002292a3e90d46a5'
+                      time.sleep(2)
+                      params={'lmt':'0','klt':'101','fields1':'f1,f2,f3,f7',
+                              'fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',
+                              'ut':ut,'secid':'90.'+code,'_':str(int(time.time()*1000))}
+                      r=s.get(api_url,params=params,headers={**base_headers,'Referer':page_url,'Origin':'https://data.eastmoney.com',
+                              'Accept':'application/json,text/plain,*/*','Sec-Fetch-Site':'same-site','Sec-Fetch-Mode':'cors','Sec-Fetch-Dest':'empty'},timeout=40)
+                      out['diagnostics'].append({'attempt':attempt+1,'stage':'api','status':r.status_code,'cookies':dict(s.cookies),'head':r.text[:300]})
+                      r.raise_for_status(); klines=((r.json().get('data') or {}).get('klines') or [])
+                      if not klines: raise RuntimeError('empty klines')
+                      for line in klines:
+                          p=line.split(',')
+                          if len(p)>=13:
+                              out['rows'].append({'date':p[0],'main_net_yuan':float(p[1]),'small_net_yuan':float(p[2]),
+                                'medium_net_yuan':float(p[3]),'large_net_yuan':float(p[4]),'super_large_net_yuan':float(p[5]),
+                                'main_ratio_pct':float(p[6]),'small_ratio_pct':float(p[7]),'medium_ratio_pct':float(p[8]),
+                                'large_ratio_pct':float(p[9]),'super_large_ratio_pct':float(p[10]),'close':float(p[11]),
+                                'change_pct':float(p[12])})
+                      last=None; break
               except Exception as e:
-                  last=repr(e); time.sleep(5*(attempt+1))
+                  last=repr(e); time.sleep(8*(attempt+1))
           if last: out['error']=last
           Path('tmp').mkdir(exist_ok=True)
           path=Path(f'tmp/sector_{key}.json'); path.write_text(json.dumps(out,ensure_ascii=False,indent=2),encoding='utf-8')

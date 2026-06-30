@@ -1,22 +1,20 @@
 name: Temporary sector fund-flow fetch
 
 on:
-  push:
+  pull_request:
     branches: [master]
     paths:
       - 'tmp/chatgpt-sector-flow-trigger.txt'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
       - name: Fetch Eastmoney sector fund-flow history
         run: |
           python - <<'PY'
@@ -88,10 +86,8 @@ jobs:
           Path('tmp').mkdir(exist_ok=True)
           Path('tmp/sector_flow_20260630.json').write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding='utf-8')
           PY
-      - name: Commit temporary output
-        run: |
-          git config user.name 'chatgpt-data-fetch'
-          git config user.email 'chatgpt-data-fetch@users.noreply.github.com'
-          git add tmp/sector_flow_20260630.json
-          git commit -m 'chore: temporary sector flow output' || exit 0
-          git push origin master
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sector-flow-data
+          path: tmp/sector_flow_20260630.json
+          retention-days: 1

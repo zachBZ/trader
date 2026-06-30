@@ -12,58 +12,64 @@ permissions:
 
 jobs:
   fetch:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: industrial-metals
+            name: 工业金属
+            code: BK1287
+          - key: consumer-electronics
+            name: 消费电子
+            code: BK1037
+          - key: solar-equipment
+            name: 光伏设备
+            code: BK1031
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch remaining Eastmoney sector histories
+      - name: Fetch one Eastmoney sector history
         run: |
           python - <<'PY'
-          import json, time
+          import json, os, time
           from pathlib import Path
           import requests
 
-          sectors = {'工业金属':'BK1287','消费电子':'BK1037','光伏设备':'BK1031'}
-          base = 'https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get'
-          headers = {
-              'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36',
-              'Accept':'application/json,text/plain,*/*','Accept-Language':'zh-CN,zh;q=0.9',
-              'Connection':'close'
-          }
-          out={'fetched_at_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'sectors':{},'diagnostics':[]}
-          for name,code in sectors.items():
-              params={'lmt':'0','klt':'101','fields1':'f1,f2,f3,f7',
-                      'fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',
-                      'ut':'b2884a393a59ad64002292a3e90d46a5','secid':'90.'+code,'_':str(int(time.time()*1000))}
-              last=None
-              for attempt in range(5):
-                  try:
-                      with requests.Session() as s:
-                          r=s.get(base,params=params,headers={**headers,'Referer':f'https://data.eastmoney.com/bkzj/{code}.html'},timeout=45)
-                      out['diagnostics'].append({'name':name,'attempt':attempt+1,'status':r.status_code,'head':r.text[:200]})
-                      r.raise_for_status(); payload=r.json(); klines=((payload.get('data') or {}).get('klines') or [])
-                      if not klines: raise RuntimeError('empty klines')
-                      rows=[]
-                      for line in klines:
-                          p=line.split(',')
-                          if len(p)>=13:
-                              rows.append({'date':p[0],'main_net_yuan':float(p[1]),'small_net_yuan':float(p[2]),
-                                           'medium_net_yuan':float(p[3]),'large_net_yuan':float(p[4]),
-                                           'super_large_net_yuan':float(p[5]),'main_ratio_pct':float(p[6]),
-                                           'small_ratio_pct':float(p[7]),'medium_ratio_pct':float(p[8]),
-                                           'large_ratio_pct':float(p[9]),'super_large_ratio_pct':float(p[10]),
-                                           'close':float(p[11]),'change_pct':float(p[12])})
-                      out['sectors'][name]={'code':code,'rows':rows}; last=None; break
-                  except Exception as e:
-                      last=repr(e); time.sleep(8*(attempt+1))
-              if last: out['sectors'][name]={'code':code,'rows':[],'error':last}
-              time.sleep(8)
+          name='${{ matrix.name }}'; code='${{ matrix.code }}'; key='${{ matrix.key }}'
+          url='https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get'
+          params={'lmt':'0','klt':'101','fields1':'f1,f2,f3,f7',
+                  'fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',
+                  'ut':'b2884a393a59ad64002292a3e90d46a5','secid':'90.'+code,'_':str(int(time.time()*1000))}
+          headers={'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36',
+                   'Referer':f'https://data.eastmoney.com/bkzj/{code}.html','Accept':'application/json,text/plain,*/*',
+                   'Accept-Language':'zh-CN,zh;q=0.9','Connection':'close'}
+          out={'fetched_at_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'name':name,'code':code,'rows':[],'diagnostics':[]}
+          last=None
+          for attempt in range(3):
+              try:
+                  r=requests.get(url,params=params,headers=headers,timeout=35)
+                  out['diagnostics'].append({'attempt':attempt+1,'status':r.status_code,'head':r.text[:300]})
+                  r.raise_for_status(); klines=((r.json().get('data') or {}).get('klines') or [])
+                  if not klines: raise RuntimeError('empty klines')
+                  for line in klines:
+                      p=line.split(',')
+                      if len(p)>=13:
+                          out['rows'].append({'date':p[0],'main_net_yuan':float(p[1]),'small_net_yuan':float(p[2]),
+                            'medium_net_yuan':float(p[3]),'large_net_yuan':float(p[4]),'super_large_net_yuan':float(p[5]),
+                            'main_ratio_pct':float(p[6]),'small_ratio_pct':float(p[7]),'medium_ratio_pct':float(p[8]),
+                            'large_ratio_pct':float(p[9]),'super_large_ratio_pct':float(p[10]),'close':float(p[11]),
+                            'change_pct':float(p[12])})
+                  last=None; break
+              except Exception as e:
+                  last=repr(e); time.sleep(5*(attempt+1))
+          if last: out['error']=last
           Path('tmp').mkdir(exist_ok=True)
-          Path('tmp/sector_flow_remaining.json').write_text(json.dumps(out,ensure_ascii=False,indent=2),encoding='utf-8')
-          print(json.dumps({'counts':{k:len(v.get('rows',[])) for k,v in out['sectors'].items()},'diagnostics':out['diagnostics']},ensure_ascii=False,indent=2))
+          path=Path(f'tmp/sector_{key}.json'); path.write_text(json.dumps(out,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(name,code,len(out['rows']),out.get('error'),out['diagnostics'])
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: sector-flow-remaining
-          path: tmp/sector_flow_remaining.json
+          name: sector-flow-${{ matrix.key }}
+          path: tmp/sector_${{ matrix.key }}.json
           retention-days: 1

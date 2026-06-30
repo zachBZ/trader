@@ -1,2 +1,2 @@
-triggered_at=2026-07-01T07:47:00+08:00
-run=parallel-remaining-sectors
+triggered_at=2026-07-01T07:52:00+08:00
+run=page-session-remaining-sectors

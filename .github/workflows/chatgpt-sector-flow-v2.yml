@@ -10,31 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  fetch:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - key: innovation-drug
-            label: 创新药
-            kind: concept
-            target: 创新药
-          - key: robot
-            label: 机器人
-            kind: concept
-            target: 机器人
-          - key: semiconductor
-            label: 半导体
-            kind: industry
-            target: 半导体
-          - key: communication
-            label: 通信
-            kind: industry
-            target: 通信设备
-          - key: dividend
-            label: 红利
-            kind: etf
-            target: 510880
+  lookup:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,70 +18,38 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -q requests
-      - name: Fetch one history
+      - name: Lookup exact board codes
         run: |
           python - <<'PY'
           import json, time
           from pathlib import Path
           import requests
 
-          label='${{ matrix.label }}'; kind='${{ matrix.kind }}'; target='${{ matrix.target }}'; key='${{ matrix.key }}'
-          headers={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36',
-                   'Accept':'application/json,text/plain,*/*','Accept-Language':'zh-CN,zh;q=0.9','Connection':'close'}
-          out={'label':label,'kind':kind,'target':target,'rows':[],'diagnostics':[]}
-          code=None; secid=None; resolved_name=target
-          try:
-              if kind in ('concept','industry'):
-                  fs='m:90+t:3' if kind=='concept' else 'm:90+t:2'
-                  url='https://82.push2.eastmoney.com/api/qt/clist/get'
-                  params={'pn':1,'pz':500,'po':1,'np':1,'fltt':2,'invt':2,'fid':'f62','fs':fs,
-                          'fields':'f12,f14','ut':'b2884a393a59ad64002292a3e90d46a5'}
-                  r=requests.get(url,params=params,headers=headers,timeout=30)
-                  out['diagnostics'].append({'stage':'lookup','status':r.status_code,'head':r.text[:300]})
-                  r.raise_for_status()
-                  diff=((r.json().get('data') or {}).get('diff') or [])
-                  exact=[x for x in diff if x.get('f14')==target]
-                  contains=[x for x in diff if target in str(x.get('f14',''))]
-                  pick=(exact or contains)[0] if (exact or contains) else None
-                  if pick is None:
-                      raise RuntimeError(f'board not found: {target}; matches={[x.get("f14") for x in diff if ("药" in str(x.get("f14","")) or "机器人" in str(x.get("f14","")) or "半导体" in str(x.get("f14","")) or "通信" in str(x.get("f14","")))]}')
-                  code=pick['f12']; resolved_name=pick['f14']; secid='90.'+code
-              else:
-                  code=target; resolved_name='上证红利ETF'; secid='1.'+target
-
-              url='https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get'
-              params={'lmt':'0','klt':'101','fields1':'f1,f2,f3,f7',
-                      'fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',
-                      'ut':'b2884a393a59ad64002292a3e90d46a5','secid':secid,'_':str(int(time.time()*1000))}
+          headers={'User-Agent':'Mozilla/5.0','Accept':'application/json,text/plain,*/*','Connection':'close'}
+          out={'concept':[],'industry':[],'diagnostics':[]}
+          for label,fs in [('concept','m:90+t:3'),('industry','m:90+t:2')]:
               last=None
-              for attempt in range(4):
+              for host in ['82.push2.eastmoney.com','push2.eastmoney.com','20.push2.eastmoney.com','40.push2.eastmoney.com']:
                   try:
-                      r=requests.get(url,params=params,headers={**headers,'Referer':f'https://data.eastmoney.com/bkzj/{code}.html'},timeout=40)
-                      out['diagnostics'].append({'stage':'history','attempt':attempt+1,'status':r.status_code,'head':r.text[:300]})
-                      r.raise_for_status(); payload=r.json(); klines=((payload.get('data') or {}).get('klines') or [])
-                      if not klines: raise RuntimeError('empty klines')
-                      for line in klines:
-                          p=line.split(',')
-                          if len(p)>=13:
-                              out['rows'].append({'date':p[0],'main_net_yuan':float(p[1]),'small_net_yuan':float(p[2]),
-                                'medium_net_yuan':float(p[3]),'large_net_yuan':float(p[4]),'super_large_net_yuan':float(p[5]),
-                                'main_ratio_pct':float(p[6]),'small_ratio_pct':float(p[7]),'medium_ratio_pct':float(p[8]),
-                                'large_ratio_pct':float(p[9]),'super_large_ratio_pct':float(p[10]),'close':float(p[11]),
-                                'change_pct':float(p[12])})
+                      url=f'https://{host}/api/qt/clist/get'
+                      params={'pn':1,'pz':1000,'po':1,'np':1,'fltt':2,'invt':2,'fid':'f62','fs':fs,
+                              'fields':'f12,f14','ut':'b2884a393a59ad64002292a3e90d46a5','_':str(int(time.time()*1000))}
+                      r=requests.get(url,params=params,headers=headers,timeout=35)
+                      out['diagnostics'].append({'label':label,'host':host,'status':r.status_code,'head':r.text[:200]})
+                      r.raise_for_status(); diff=((r.json().get('data') or {}).get('diff') or [])
+                      if not diff: raise RuntimeError('empty diff')
+                      out[label]=[{'code':x.get('f12'),'name':x.get('f14')} for x in diff if any(k in str(x.get('f14','')) for k in ['机器人','创新药','半导体','通信','红利'])]
                       last=None; break
                   except Exception as e:
-                      last=repr(e); time.sleep(6*(attempt+1))
-              if last: raise RuntimeError(last)
-              out['code']=code; out['secid']=secid; out['resolved_name']=resolved_name
-          except Exception as e:
-              out['error']=repr(e)
+                      last=repr(e); time.sleep(3)
+              if last: out[label+'_error']=last
           Path('tmp').mkdir(exist_ok=True)
-          Path(f'tmp/five_sector_{key}.json').write_text(json.dumps(out,ensure_ascii=False,indent=2),encoding='utf-8')
-          print(json.dumps({'label':label,'resolved_name':resolved_name,'code':code,'count':len(out['rows']),'error':out.get('error'),'diagnostics':out['diagnostics']},ensure_ascii=False,indent=2))
+          Path('tmp/five_sector_lookup.json').write_text(json.dumps(out,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(out,ensure_ascii=False,indent=2))
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: five-sector-${{ matrix.key }}
-          path: tmp/five_sector_${{ matrix.key }}.json
+          name: five-sector-lookup
+          path: tmp/five_sector_lookup.json
           retention-days: 1
